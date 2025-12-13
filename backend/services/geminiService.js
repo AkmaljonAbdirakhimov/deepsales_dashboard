@@ -738,52 +738,7 @@ async function updateAnalysisStep(step, data, audioFileId, db) {
     }
 }
 
-async function transcribeAndAnalyzeAudio(fileUri, mimeType, db, isCancelled = null) {
-    // Check for cancellation before starting
-    if (isCancelled && isCancelled()) {
-        throw new Error('Analysis cancelled by user');
-    }
-
-    // Validate API key
-    if (!apiKey || !genAI) {
-        throw new Error('GEMINI_API_KEY is not configured. Please set it in your environment variables.');
-    }
-
-    // Validate fileUri format
-    if (!fileUri || typeof fileUri !== 'string') {
-        throw new Error(`Invalid fileUri: ${fileUri}. Expected a string.`);
-    }
-
-    console.log(`Using file URI: ${fileUri}`);
-    console.log('Starting three-step analysis process...');
-
-    try {
-
-        // Step 1: Transcribe and diarize using Gemini 2.5 Pro
-        console.log('Step 1/3: Transcribing and diarizing audio...');
-        const segments = await transcribeAndDiarize(fileUri, mimeType, isCancelled);
-        console.log(`Transcription complete: ${segments.length} segments`);
-        console.log(segments);
-
-        // Step 2: Identify category using Gemini 2.0 Flash Lite
-        console.log('Step 2/3: Identifying conversation category...');
-        const category = await identifyCategory(segments, db, isCancelled);
-        console.log(`Category identified: ${category}`);
-
-
-        // Step 3: Analyze using Gemini 3.0 Pro with identified category and transcription
-        console.log('Step 3/3: Analyzing conversation with identified category...');
-        const result = await analyzeAudio(segments, category, db, isCancelled);
-        console.log('Analysis complete');
-        console.log(result);
-        return result;
-    } catch (error) {
-        console.error('Error in three-step analysis process:', error);
-        throw error;
-    }
-}
-
-async function transcribeAndAnalyzeAudioWithUpdates(fileUri, mimeType, audioFileId, db, isCancelled = null) {
+async function transcribeAndAnalyzeAudio(fileUri, mimeType, audioFileId, db, isCancelled = null) {
     // Check for cancellation before starting
     if (isCancelled && isCancelled()) {
         throw new Error('Analysis cancelled by user');
@@ -847,6 +802,5 @@ module.exports = {
     uploadToGemini,
     waitForFileActive,
     transcribeAndAnalyzeAudio,
-    transcribeAndAnalyzeAudioWithUpdates,
     updateAnalysisStep
 };

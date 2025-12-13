@@ -1,5 +1,7 @@
 
-const { parseTimestamp } = require('../utils/timestamp');
+
+const { getAudioDurationSeconds } = require('../utils/audioDuration');
+const { getCompanyFilePath } = require('../utils/filePaths');
 
 // Helper function to build date filter (PostgreSQL syntax)
 // Returns { filter: string, params: array } for custom period, or { filter: string, params: [] } for others
@@ -60,7 +62,7 @@ async function fetchManagers(db, dateFilterObj) {
 async function fetchManagerAnalyses(db, managerId, dateFilterObj) {
     const { filter: dateFilter, params: dateParams = [] } = dateFilterObj || { filter: '', params: [] };
     return await db.all(`
-        SELECT an.*, a.upload_date, t.segments as transcription_segments
+        SELECT an.*, a.upload_date, a.filename, t.segments as transcription_segments
         FROM analyses an
         JOIN audio_files a ON an.audio_file_id = a.id
         LEFT JOIN transcriptions t ON a.id = t.audio_file_id
@@ -319,137 +321,65 @@ function aggregateComplaints(complaints, clientComplaints) {
     }
 }
 
-
-// Helper function to calculate talk ratio and duration from segments with timestamps
-function calculateTalkRatioWithTimestamps(segments) {
-    let managerTime = 0;
-    let customerTime = 0;
-    let callDuration = 0;
-    let maxEndTime = 0;
-
-    const sortedSegments = [...segments].sort((a, b) => {
-        const timeA = parseTimestamp(a.timestamp);
-        const timeB = parseTimestamp(b.timestamp);
-        if (timeA === null) return 1;
-        if (timeB === null) return -1;
-        return timeA - timeB;
-    });
-
-    for (let i = 0; i < sortedSegments.length; i++) {
-        const seg = sortedSegments[i];
-        const speaker = (seg.speaker || '').toLowerCase();
-
-        if (speaker === 'system') {
-            continue;
-        }
-
-        const startTime = parseTimestamp(seg.timestamp);
-        if (startTime === null) {
-            continue;
-        }
-
-        let segmentDuration = 0;
-        let nextStartTime = null;
-        for (let j = i + 1; j < sortedSegments.length; j++) {
-            const nextTime = parseTimestamp(sortedSegments[j].timestamp);
-            if (nextTime !== null && nextTime > startTime) {
-                nextStartTime = nextTime;
-                break;
-            }
-        }
-
-        if (nextStartTime !== null) {
-            segmentDuration = nextStartTime - startTime;
-        } else {
-            const wordCount = (seg.text || '').split(/\s+/).length;
-            segmentDuration = Math.max(2, Math.round(wordCount / 2.5));
-        }
-
-        if (speaker === 'manager') {
-            managerTime += segmentDuration;
-        } else if (speaker === 'client') {
-            customerTime += segmentDuration;
-        }
-
-        // Track the maximum end time across all segments
-        const endTime = startTime + segmentDuration;
-        if (endTime > maxEndTime) {
-            maxEndTime = endTime;
-        }
-    }
-
-    // Use the maximum end time as the call duration
-    callDuration = maxEndTime;
-
-    return { managerTime, customerTime, callDuration };
-}
-
-// Helper function to calculate talk ratio and duration from segments without timestamps
-function calculateTalkRatioWithoutTimestamps(segments) {
-    let managerTime = 0;
-    let customerTime = 0;
-    const wordsPerSecond = 2.5;
-
-    for (let i = 0; i < segments.length; i++) {
-        const seg = segments[i];
-        const speaker = (seg.speaker || '').toLowerCase();
-        if (speaker === 'system') {
-            continue;
-        }
-
-        const wordCount = (seg.text || '').split(/\s+/).length;
-        const segmentDuration = Math.max(1, Math.round(wordCount / wordsPerSecond));
-
-        if (speaker === 'manager') {
-            managerTime += segmentDuration;
-        } else if (speaker === 'client') {
-            customerTime += segmentDuration;
-        }
-    }
-
-    const totalTalkTime = managerTime + customerTime;
-    const callDuration = Math.round(totalTalkTime / 0.6);
-
-    return { managerTime, customerTime, callDuration };
-}
-
-// Helper function to calculate talk ratio and duration from transcription segments
-function calculateTalkRatioAndDuration(transcriptionSegments) {
+// Helper function to calculate talk ratio from transcription segments
+function calculateTalkRatio(transcriptionSegments) {
     try {
-        const segments = JSON.parse(transcriptionSegments);
+        // Handle both string (JSON) and already parsed object
+        let segments;
+        if (typeof transcriptionSegments === 'string') {
+            segments = JSON.parse(transcriptionSegments);
+        } else if (Array.isArray(transcriptionSegments)) {
+            segments = transcriptionSegments;
+        } else {
+            return null;
+        }
 
         if (segments.length === 0) {
-            return { talkRatio: null, duration: null };
+            return null;
         }
 
-        const hasTimestamps = segments.some(seg => seg.timestamp && parseTimestamp(seg.timestamp) !== null);
+        // Calculate talk ratio (percentages only)
+        let managerTime = 0;
+        let customerTime = 0;
+        const charactersPerSecond = 12; // Average speaking rate (approximately 150 words/min, 5 chars/word = 12 chars/sec)
 
-        let managerTime, customerTime, callDuration;
+        // Calculate actual speaking time based on character count for each segment
+        for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            const speaker = (seg.speaker || '').toLowerCase();
 
-        if (hasTimestamps) {
-            const result = calculateTalkRatioWithTimestamps(segments);
-            managerTime = result.managerTime;
-            customerTime = result.customerTime;
-            callDuration = result.callDuration;
-        } else {
-            const result = calculateTalkRatioWithoutTimestamps(segments);
-            managerTime = result.managerTime;
-            customerTime = result.customerTime;
-            callDuration = result.callDuration;
+            // Skip system segments
+            if (speaker === 'system') {
+                continue;
+            }
+
+            // Calculate speaking duration based on character count
+            const characterCount = (seg.text || '').trim().length;
+            const segmentDuration = Math.max(1, Math.round(characterCount / charactersPerSecond));
+
+            // Add to appropriate speaker time
+            if (speaker === 'manager') {
+                managerTime += segmentDuration;
+            } else if (speaker === 'client') {
+                customerTime += segmentDuration;
+            }
         }
 
         const totalTime = managerTime + customerTime;
 
-        const talkRatio = totalTime > 0 ? {
+        // Return percentages only
+        if (totalTime === 0) {
+            return { manager: 50, customer: 50 };
+        }
+
+        return {
             manager: Math.round((managerTime / totalTime) * 100),
             customer: Math.round((customerTime / totalTime) * 100)
-        } : null;
-
-        return { talkRatio, duration: callDuration > 0 ? callDuration : null };
+        };
     } catch (e) {
         console.error('❌ Error calculating talk ratio:', e);
         console.error('Stack:', e.stack);
-        return { talkRatio: null, duration: null };
+        return null;
     }
 }
 
@@ -475,7 +405,7 @@ function calculateAverages(categoryScores, criteriaScores, talkRatios, durations
     let avgTalkRatio = { manager: 50, customer: 50 };
     if (talkRatios.length > 0) {
         const totalManagerRatio = talkRatios.reduce((sum, r) => {
-            return sum + r.manager;
+            return sum + (r && r.manager ? r.manager : 0);
         }, 0);
         const avgOp = Math.round(totalManagerRatio / talkRatios.length);
         avgTalkRatio = { manager: avgOp, customer: 100 - avgOp };
@@ -489,7 +419,9 @@ function calculateAverages(categoryScores, criteriaScores, talkRatios, durations
 }
 
 // Helper function to process analyses for a manager
-function processManagerAnalyses(analyses, categoryKeys, criterionToCategory) {
+async function processManagerAnalyses(analyses, categoryKeys, criterionToCategory, databaseName) {
+    console.log('🔍 [processManagerAnalyses] Starting, analyses count:', analyses.length, 'databaseName:', databaseName);
+
     const { categoryScores, categoryCounts, criteriaScores, categoryMistakes } =
         initializeAggregationStructures(categoryKeys);
 
@@ -498,7 +430,9 @@ function processManagerAnalyses(analyses, categoryKeys, criterionToCategory) {
     const talkRatios = [];
     let totalScore = 0;
 
-    for (const analysis of analyses) {
+    for (let i = 0; i < analyses.length; i++) {
+        const analysis = analyses[i];
+
         const { critScores, mistakes, complaints } = parseAnalysisData(analysis, categoryKeys);
         totalScore += analysis.overall_score || 0;
 
@@ -523,13 +457,24 @@ function processManagerAnalyses(analyses, categoryKeys, criterionToCategory) {
         aggregateMistakes(mistakes, categoryMistakes);
         aggregateComplaints(complaints, clientComplaints);
 
+        // Calculate talk ratio from transcription segments
         if (analysis.transcription_segments) {
-            const { talkRatio, duration } = calculateTalkRatioAndDuration(analysis.transcription_segments);
+            const talkRatio = calculateTalkRatio(analysis.transcription_segments);
             if (talkRatio) {
                 talkRatios.push(talkRatio);
             }
-            if (duration) {
-                durations.push(duration);
+        }
+
+        // Get duration from audio file
+        if (analysis.filename && databaseName) {
+            try {
+                const filePath = getCompanyFilePath(databaseName, analysis.filename);
+                const duration = await getAudioDurationSeconds(filePath);
+                if (duration > 0) {
+                    durations.push(duration);
+                }
+            } catch (error) {
+                console.error(`Error getting duration for file ${analysis.filename}:`, error.message);
             }
         }
     }
@@ -572,7 +517,7 @@ async function getManagerStats(req, res) {
                 continue;
             }
 
-            const stats = processManagerAnalyses(analyses, categoryKeys, criterionToCategory);
+            const stats = await processManagerAnalyses(analyses, categoryKeys, criterionToCategory, req.user.database_name);
 
             result.push({
                 id: manager.id,
@@ -756,13 +701,22 @@ async function getAudioStats(req, res) {
         const { categoryKeys } = await fetchCategoriesAndMappings(db);
         const { critScores, mistakes, complaints } = parseAnalysisData(analysis, categoryKeys);
 
-        // Calculate talk ratio and duration
+        // Calculate talk ratio from transcription
         let talkRatio = null;
-        let duration = null;
         if (transcription && transcription.segments) {
-            const talkRatioData = calculateTalkRatioAndDuration(transcription.segments);
-            talkRatio = talkRatioData.talkRatio;
-            duration = talkRatioData.duration;
+            talkRatio = calculateTalkRatio(transcription.segments);
+        }
+
+        // Get duration from audio file
+        let duration = null;
+        if (file.filename) {
+            try {
+                const filePath = getCompanyFilePath(req.user.database_name, file.filename);
+                duration = await getAudioDurationSeconds(filePath);
+                duration = duration > 0 ? duration : null;
+            } catch (error) {
+                console.error(`Error getting duration for file ${file.filename}:`, error);
+            }
         }
 
         // Format response

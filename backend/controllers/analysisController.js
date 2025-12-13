@@ -156,9 +156,10 @@ async function analyzeFiles(req, res) {
                     }
 
                     // 3. Transcribe and Analyze in one call (with cancellation check)
+                    // The function now handles incremental database updates internally
                     let result;
                     try {
-                        result = await geminiService.transcribeAndAnalyzeAudio(activeFile.uri, mimeType, db, () => isCancelled(id));
+                        result = await geminiService.transcribeAndAnalyzeAudio(activeFile.uri, mimeType, id, db, () => isCancelled(id));
                     } catch (err) {
                         if (err.message === 'Analysis cancelled by user') {
                             console.log(`Cancelling file ${id} during analysis`);
@@ -177,27 +178,7 @@ async function analyzeFiles(req, res) {
                         continue;
                     }
 
-                    // Save transcription
-                    await db.run(
-                        'INSERT INTO transcriptions (audio_file_id, full_text, segments) VALUES (?, ?, ?)',
-                        id,
-                        result.transcription.full_text,
-                        JSON.stringify(result.transcription.segments)
-                    );
-
-                    // Save analysis with new fields
-                    await db.run(
-                        'INSERT INTO analyses (audio_file_id, category, overall_score, criteria_scores, objections, mistakes, mood, feedback, explanation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                        id,
-                        result.analysis.category || null,
-                        result.analysis.overall_score,
-                        JSON.stringify(result.analysis.criteria_scores || {}),
-                        JSON.stringify(result.analysis.objections || []),
-                        JSON.stringify(result.analysis.mistakes || []),
-                        JSON.stringify(result.analysis.mood || {}),
-                        result.analysis.feedback || result.analysis.explanation || '',
-                        result.analysis.explanation || result.analysis.feedback || '' // Keep explanation for backward compatibility
-                    );
+                    // Transcription and analysis are already saved to database by transcribeAndAnalyzeAudio
 
                     await db.run('UPDATE audio_files SET status = ? WHERE id = ?', 'completed', id);
                     markAsCompleted(id);
