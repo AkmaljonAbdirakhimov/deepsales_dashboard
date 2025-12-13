@@ -7,15 +7,24 @@ import {
     LineChart, Line, PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { clsx } from 'clsx';
-import { Filter, Calendar, User, Tag, Users, Loader2 } from 'lucide-react';
+import { Filter, Calendar, User, Tag, Users, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { api, AudioFile, VolumeDataPoint } from '@/services/api';
 import { Category } from '@/services/categoryService';
 
 // Helper function to get criteria list from manager data
 // Extracts unique criteria names from managers' criteria_scores for a given category
-const getCategoryCriteria = (managers: Manager[], category: string): string[] => {
-    const criteriaSet = new Set<string>();
+// Orders criteria by database id order (same as database)
+const getCategoryCriteria = (managers: Manager[], category: string, categories: Category[]): string[] => {
+    // First, get criteria from database in the correct order (by id)
+    const dbCategory = categories.find(cat => cat.name === category);
+    const dbCriteriaOrder: string[] = [];
+    if (dbCategory && dbCategory.criteria) {
+        // Criteria are already ordered by id from the backend
+        dbCriteriaOrder.push(...dbCategory.criteria.map(c => c.name));
+    }
 
+    // Get all criteria that exist in manager data
+    const criteriaSet = new Set<string>();
     managers.forEach(op => {
         const criteriaScores = op.criteria_scores?.[category] || {};
         Object.keys(criteriaScores).forEach(criterion => {
@@ -23,8 +32,23 @@ const getCategoryCriteria = (managers: Manager[], category: string): string[] =>
         });
     });
 
-    // Return as sorted array for consistency
-    return Array.from(criteriaSet).sort();
+    // Return criteria in database order, with any additional criteria from manager data appended
+    const result: string[] = [];
+
+    // Add criteria in database order
+    dbCriteriaOrder.forEach(criterion => {
+        if (criteriaSet.has(criterion)) {
+            result.push(criterion);
+            criteriaSet.delete(criterion);
+        }
+    });
+
+    // Add any remaining criteria that weren't in the database (shouldn't happen, but just in case)
+    criteriaSet.forEach(criterion => {
+        result.push(criterion);
+    });
+
+    return result;
 };
 
 // Updated Palette
@@ -237,6 +261,54 @@ export default function Statistics() {
         });
     };
 
+    // Expanded complaint tags state
+    const [expandedComplaintTags, setExpandedComplaintTags] = useState<Set<string>>(new Set());
+
+    // Toggle complaint tag expansion
+    const toggleComplaintTag = (tag: string) => {
+        setExpandedComplaintTags(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(tag)) {
+                newSet.delete(tag);
+            } else {
+                newSet.add(tag);
+            }
+            return newSet;
+        });
+    };
+
+    // Expanded mistake tags state
+    const [expandedMistakeTags, setExpandedMistakeTags] = useState<Set<string>>(new Set());
+
+    // Toggle mistake tag expansion
+    const toggleMistakeTag = (tag: string) => {
+        setExpandedMistakeTags(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(tag)) {
+                newSet.delete(tag);
+            } else {
+                newSet.add(tag);
+            }
+            return newSet;
+        });
+    };
+
+    // Expanded recommendation tags state
+    const [expandedRecommendationTags, setExpandedRecommendationTags] = useState<Set<string>>(new Set());
+
+    // Toggle recommendation tag expansion
+    const toggleRecommendationTag = (tag: string) => {
+        setExpandedRecommendationTags(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(tag)) {
+                newSet.delete(tag);
+            } else {
+                newSet.add(tag);
+            }
+            return newSet;
+        });
+    };
+
     // Load categories from database
     useEffect(() => {
         const loadCategories = async () => {
@@ -442,10 +514,10 @@ export default function Statistics() {
 
     // Prepare Criteria Data
     const { teamCriteriaData, managerCriteriaData } = useMemo(() => {
-        const criteriaList = getCategoryCriteria(filteredManagers, filterCategory);
+        const criteriaList = getCategoryCriteria(filteredManagers, filterCategory, categories);
 
-        // Filter managers who have actual analyses (total_audios > 0)
-        const managersWithAnalyses = filteredManagers.filter(op => (op.total_audios || 0) > 0);
+        // Filter managers who have actual analyses for this category (category_counts > 0)
+        const managersWithAnalyses = filteredManagers.filter(op => (op.category_counts?.[filterCategory] || 0) > 0);
 
         // Team Data
         const teamData = criteriaList.map(criterion => {
@@ -559,8 +631,8 @@ export default function Statistics() {
         const selectedCatDisplay = filterCategory.charAt(0).toUpperCase() + filterCategory.slice(1);
         const categories = [selectedCatDisplay];
 
-        // Filter managers who have actual analyses (total_audios > 0)
-        const managersWithAnalyses = filteredManagers.filter(op => (op.total_audios || 0) > 0);
+        // Filter managers who have actual analyses for this category (category_counts > 0)
+        const managersWithAnalyses = filteredManagers.filter(op => (op.category_counts?.[filterCategory] || 0) > 0);
 
         // Team Duration (Calculate average from real manager data)
         const totalDuration = managersWithAnalyses.reduce((sum, op) => sum + (op.average_duration || 0), 0);
@@ -625,33 +697,23 @@ export default function Statistics() {
             });
         });
 
-        // Convert to array format - flatten by tag, showing mistake texts
-        // For each tag, show all mistakes sorted by count within that tag
-        const teamMistakes: Array<{ name: string; count: number; tag: string; tagDisplayName: string }> = [];
-        Object.entries(teamMistakesByTag).forEach(([tag, tagData]) => {
-            // Sort mistakes within tag by count
-            tagData.mistakes.sort((a, b) => b.count - a.count);
+        // Convert to grouped format by tag
+        const teamMistakes = Object.entries(teamMistakesByTag)
+            .map(([tag, tagData]) => {
+                // Sort mistakes within tag by count
+                const sortedMistakes = tagData.mistakes.sort((a, b) => b.count - a.count);
 
-            // Add each mistake with its tag info
-            tagData.mistakes.forEach(mistake => {
-                teamMistakes.push({
-                    name: mistake.text,
-                    count: mistake.count,
+                return {
                     tag: tag,
-                    tagDisplayName: formatTagDisplayName(tag)
-                });
-            });
-        });
-
-        // Sort by tag count (total), then by individual mistake count
-        teamMistakes.sort((a, b) => {
-            const tagCountA = teamMistakesByTag[a.tag].count;
-            const tagCountB = teamMistakesByTag[b.tag].count;
-            if (tagCountA !== tagCountB) {
-                return tagCountB - tagCountA; // Higher tag total first
-            }
-            return b.count - a.count; // Then by mistake count
-        });
+                    tagDisplayName: formatTagDisplayName(tag),
+                    totalCount: tagData.count,
+                    mistakes: sortedMistakes.map(m => ({
+                        name: m.text,
+                        count: m.count
+                    }))
+                };
+            })
+            .sort((a, b) => b.totalCount - a.totalCount); // Sort groups by total count
 
         // Manager Mistakes (Top 3 per manager)
         const managerMistakes = filteredManagers.map(op => {
@@ -694,37 +756,52 @@ export default function Statistics() {
             return recommendations.sort((a, b) => b.count - a.count);
         };
 
-        // Team Recommendations - Aggregate by recommendation text
-        const teamRecommendationsMap: Record<string, { recommendation: string; count: number; examples: string[] }> = {};
+        // Team Recommendations - Group by tag
+        const teamRecommendationsByTag: Record<string, Array<{ mistake: string; recommendation: string; count: number }>> = {};
+
         filteredManagers.forEach(op => {
-            const opRecommendations = extractRecommendations(op.category_mistakes, filterCategory);
-            opRecommendations.forEach(rec => {
-                // Use recommendation as key for aggregation
-                const key = rec.recommendation || rec.mistake;
-                if (!teamRecommendationsMap[key]) {
-                    teamRecommendationsMap[key] = {
-                        recommendation: rec.recommendation,
-                        count: 0,
-                        examples: []
-                    };
-                }
-                teamRecommendationsMap[key].count += rec.count;
-                // Store example mistake texts (limit to 3)
-                if (rec.mistake && !teamRecommendationsMap[key].examples.includes(rec.mistake) &&
-                    teamRecommendationsMap[key].examples.length < 3) {
-                    teamRecommendationsMap[key].examples.push(rec.mistake);
+            const opMistakes = op.category_mistakes?.[filterCategory] || {};
+            Object.entries(opMistakes).forEach(([mistakeText, mistakeData]) => {
+                const data = mistakeData as any;
+                if (typeof mistakeData === 'object' && data && data.recommendation) {
+                    const tag = data.tag || 'other';
+
+                    if (!teamRecommendationsByTag[tag]) {
+                        teamRecommendationsByTag[tag] = [];
+                    }
+
+                    // Check if this recommendation already exists for this tag
+                    const existingRec = teamRecommendationsByTag[tag].find(r =>
+                        r.mistake === mistakeText && r.recommendation === data.recommendation
+                    );
+
+                    if (existingRec) {
+                        existingRec.count += (data.count || 0);
+                    } else {
+                        teamRecommendationsByTag[tag].push({
+                            mistake: mistakeText,
+                            recommendation: data.recommendation,
+                            count: data.count || 0
+                        });
+                    }
                 }
             });
         });
 
-        const teamRecommendations = Object.entries(teamRecommendationsMap)
-            .map(([key, data]) => ({
-                mistake: data.examples[0] || key.split('|')[0] || '',
-                recommendation: data.recommendation,
-                count: data.count,
-                examples: data.examples
-            }))
-            .sort((a, b) => b.count - a.count);
+        // Convert to grouped format
+        const teamRecommendations = Object.entries(teamRecommendationsByTag)
+            .map(([tag, recommendations]) => {
+                const sortedRecs = recommendations.sort((a, b) => b.count - a.count);
+                const totalCount = recommendations.reduce((sum, r) => sum + r.count, 0);
+
+                return {
+                    tag: tag,
+                    tagDisplayName: formatTagDisplayName(tag),
+                    totalCount: totalCount,
+                    recommendations: sortedRecs
+                };
+            })
+            .sort((a, b) => b.totalCount - a.totalCount); // Sort groups by total count
 
         // Manager Recommendations
         const managerRecommendations = filteredManagers.map(op => ({
@@ -786,27 +863,37 @@ export default function Statistics() {
             });
         });
 
-        // Convert to array format, grouping by tag first, then sorting by count
-        const result = Object.entries(objectionTexts)
-            .map(([text, data]) => {
-                // Truncate long texts for display (keep full text for tooltip)
-                const displayText = text.length > 60 ? text.substring(0, 57) + '...' : text;
-                return {
-                    name: displayText, // Show actual objection text (truncated for display)
-                    fullText: text, // Keep full text for tooltip
-                    count: data.count,
-                    tag: data.tag,
-                    tagDisplayName: formatTagDisplayName(data.tag)
-                };
-            })
-            // Sort by tag first, then by count (descending)
-            .sort((a, b) => {
-                if (a.tag !== b.tag) {
-                    return a.tag.localeCompare(b.tag);
-                }
-                return b.count - a.count;
-            })
-            .slice(0, 20); // Show top 20 objection texts
+        // Group by tag
+        const groupedByTag: Record<string, Array<{ name: string; fullText: string; count: number; tag: string; tagDisplayName: string }>> = {};
+
+        Object.entries(objectionTexts).forEach(([text, data]) => {
+            const displayText = text.length > 60 ? text.substring(0, 57) + '...' : text;
+            const complaintItem = {
+                name: displayText,
+                fullText: text,
+                count: data.count,
+                tag: data.tag,
+                tagDisplayName: formatTagDisplayName(data.tag)
+            };
+
+            if (!groupedByTag[data.tag]) {
+                groupedByTag[data.tag] = [];
+            }
+            groupedByTag[data.tag].push(complaintItem);
+        });
+
+        // Sort each group by count (descending) and convert to array format
+        const result = Object.entries(groupedByTag).map(([tag, complaints]) => {
+            const sortedComplaints = complaints.sort((a, b) => b.count - a.count);
+            const totalCount = complaints.reduce((sum, c) => sum + c.count, 0);
+
+            return {
+                tag: tag,
+                tagDisplayName: formatTagDisplayName(tag),
+                totalCount: totalCount,
+                complaints: sortedComplaints
+            };
+        }).sort((a, b) => b.totalCount - a.totalCount); // Sort groups by total count
 
         return result;
     }, [filteredManagers]);
@@ -1181,14 +1268,14 @@ export default function Statistics() {
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
                     <p className="text-gray-500 text-sm font-medium">Tahlil qilingan qo'ng'iroqlar</p>
                     <p className="text-3xl font-bold text-gray-900 mt-2">
-                        {filteredManagers.reduce((acc, op) => acc + (op.total_audios || 0), 0)}
+                        {filteredManagers.reduce((acc, op) => acc + (op.category_counts?.[filterCategory] || 0), 0)}
                     </p>
                 </div>
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
                     <p className="text-gray-500 text-sm font-medium">O'rtacha jamoa balli ({getCategoryDisplayName(filterCategory, categories, managers) || filterCategory})</p>
                     <p className="text-3xl font-bold text-indigo-600 mt-2">
                         {(() => {
-                            const managersWithAnalyses = filteredManagers.filter(op => (op.total_audios || 0) > 0);
+                            const managersWithAnalyses = filteredManagers.filter(op => (op.category_counts?.[filterCategory] || 0) > 0);
                             return managersWithAnalyses.length > 0
                                 ? Math.round(managersWithAnalyses.reduce((acc, op) => acc + getScore(op), 0) / managersWithAnalyses.length)
                                 : 0;
@@ -1199,7 +1286,7 @@ export default function Statistics() {
                     <p className="text-gray-500 text-sm font-medium">Eng yaxshi natija</p>
                     <p className="text-xl font-bold text-emerald-600 mt-2">
                         {(() => {
-                            const managersWithAnalyses = filteredManagers.filter(op => (op.total_audios || 0) > 0);
+                            const managersWithAnalyses = filteredManagers.filter(op => (op.category_counts?.[filterCategory] || 0) > 0);
                             return managersWithAnalyses.length > 0
                                 ? managersWithAnalyses.reduce((prev, current) => getScore(prev) > getScore(current) ? prev : current).name
                                 : '-';
@@ -1322,7 +1409,7 @@ export default function Statistics() {
                             <div className="h-80 w-full">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart
-                                        data={getCategoryCriteria(managers, filterCategory).map(criterion => ({
+                                        data={getCategoryCriteria(managers, filterCategory, categories).map(criterion => ({
                                             criterion,
                                             score: comparisonOps[0].criteria_scores?.[filterCategory]?.[criterion] || 0
                                         }))}
@@ -1356,7 +1443,7 @@ export default function Statistics() {
                             <div className="h-80 w-full">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart
-                                        data={getCategoryCriteria(managers, filterCategory).map(criterion => ({
+                                        data={getCategoryCriteria(managers, filterCategory, categories).map(criterion => ({
                                             criterion,
                                             score: comparisonOps[1].criteria_scores?.[filterCategory]?.[criterion] || 0
                                         }))}
@@ -1463,7 +1550,7 @@ export default function Statistics() {
                                             <thead className="text-xs text-gray-500 uppercase bg-gray-50 sticky top-0 z-10">
                                                 <tr>
                                                     <th className="px-4 py-3 font-medium text-gray-700">Manager</th>
-                                                    {getCategoryCriteria(filteredManagers, filterCategory).map(criterion => (
+                                                    {getCategoryCriteria(filteredManagers, filterCategory, categories).map(criterion => (
                                                         <th key={criterion} className="px-4 py-3 font-medium text-gray-700 whitespace-nowrap">
                                                             {criterion}
                                                         </th>
@@ -1476,7 +1563,7 @@ export default function Statistics() {
                                                         <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">
                                                             {op.name}
                                                         </td>
-                                                        {getCategoryCriteria(filteredManagers, filterCategory).map(criterion => {
+                                                        {getCategoryCriteria(filteredManagers, filterCategory, categories).map(criterion => {
                                                             const score = op.criteria_scores?.[filterCategory]?.[criterion] || 0;
                                                             return (
                                                                 <td key={criterion} className="px-4 py-3">
@@ -1763,7 +1850,7 @@ export default function Statistics() {
                                         <PieChart>
                                             <Pie
                                                 data={(() => {
-                                                    const managersWithAnalyses = filteredManagers.filter(op => (op.total_audios || 0) > 0);
+                                                    const managersWithAnalyses = filteredManagers.filter(op => (op.category_counts?.[filterCategory] || 0) > 0);
                                                     const managerRatio = managersWithAnalyses.length > 0
                                                         ? Math.round(managersWithAnalyses.reduce((acc, op) => acc + (op.talk_ratio?.manager || 0), 0) / managersWithAnalyses.length)
                                                         : 0;
@@ -1930,27 +2017,38 @@ export default function Statistics() {
                 ) : (
                     <>
                         {/* Team Duration */}
-                        {filterManager === 'all' && (
+                        {filterManager === 'all' && !isComparisonMode && (
                             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
                                 <h2 className="text-xl font-semibold text-gray-800 mb-6">O'rtacha davomiylik - Jamoa ({getCategoryDisplayName(filterCategory, categories, managers) || filterCategory})</h2>
-                                <div className="h-80 w-full">
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <BarChart
-                                            data={teamDurationData}
-                                            margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
-                                        >
-                                            <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                                            <XAxis dataKey="category" />
-                                            <YAxis tickFormatter={(val) => `${Math.floor(val / 60)}m`} />
-                                            <Tooltip
-                                                cursor={{ fill: '#f3f4f6' }}
-                                                contentStyle={tooltipContentStyle}
-                                                formatter={(value: number) => [formatDuration(value), 'Davomiylik']}
-                                                labelStyle={{ color: '#111827', fontWeight: '600', marginBottom: '4px' }}
-                                            />
-                                            <Bar dataKey="duration" fill="#4f46e5" radius={[4, 4, 0, 0]} name="O'rtacha davomiylik" />
-                                        </BarChart>
-                                    </ResponsiveContainer>
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-sm text-left">
+                                        <thead className="text-xs text-gray-500 uppercase bg-gray-50">
+                                            <tr>
+                                                <th className="px-4 py-3 font-medium text-gray-700">Jamoa</th>
+                                                <th className="px-4 py-3 font-medium text-gray-700">O'rtacha davomiylik</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100">
+                                            <tr className="hover:bg-gray-50 transition-colors">
+                                                <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">
+                                                    {(() => {
+                                                        const managersWithAnalyses = filteredManagers.filter(op => (op.category_counts?.[filterCategory] || 0) > 0);
+                                                        return managersWithAnalyses.length > 0
+                                                            ? `Jamoa (${managersWithAnalyses.length} manager${managersWithAnalyses.length > 1 ? 'lar' : ''})`
+                                                            : 'Jamoa';
+                                                    })()}
+                                                </td>
+                                                <td className="px-4 py-3 font-medium text-gray-700">
+                                                    {(() => {
+                                                        const managersWithAnalyses = filteredManagers.filter(op => (op.category_counts?.[filterCategory] || 0) > 0);
+                                                        const totalDuration = managersWithAnalyses.reduce((sum, op) => sum + (op.average_duration || 0), 0);
+                                                        const avgDuration = managersWithAnalyses.length > 0 ? Math.round(totalDuration / managersWithAnalyses.length) : 0;
+                                                        return formatDuration(avgDuration);
+                                                    })()}
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
                                 </div>
                             </div>
                         )}
@@ -2037,30 +2135,60 @@ export default function Statistics() {
                     <h2 className="text-xl font-semibold text-gray-800 mb-6">Eng ko'p berilgan e'tirozlar (Mijozlar bo'limi)</h2>
                     {complaintsData.length > 0 ? (
                         <div className="flex-1 overflow-auto">
-                            <table className="w-full text-sm text-left">
-                                <thead className="text-xs text-gray-500 uppercase bg-gray-50 sticky top-0 z-10">
-                                    <tr>
-                                        <th className="px-4 py-3 font-medium text-gray-700">E'tiroz</th>
-                                        <th className="px-4 py-3 font-medium text-gray-700">Tag</th>
-                                        <th className="px-4 py-3 font-medium text-gray-700">Soni</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-100">
-                                    {complaintsData.map((complaint, index) => (
-                                        <tr key={index} className="hover:bg-gray-50 transition-colors">
-                                            <td className="px-4 py-3 text-gray-900">
-                                                {complaint.fullText || complaint.name}
-                                            </td>
-                                            <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
-                                                {complaint.tagDisplayName}
-                                            </td>
-                                            <td className="px-4 py-3 font-medium text-gray-700">
-                                                {complaint.count} marta
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <div className="space-y-2">
+                                {complaintsData.map((tagGroup, groupIndex) => {
+                                    const isExpanded = expandedComplaintTags.has(tagGroup.tag);
+                                    return (
+                                        <div key={groupIndex} className="border border-gray-200 rounded-lg overflow-hidden">
+                                            {/* Tag Group Header */}
+                                            <button
+                                                onClick={() => toggleComplaintTag(tagGroup.tag)}
+                                                className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-between text-left"
+                                            >
+                                                <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                    {isExpanded ? (
+                                                        <ChevronDown className="w-5 h-5 text-gray-600 flex-shrink-0" />
+                                                    ) : (
+                                                        <ChevronRight className="w-5 h-5 text-gray-600 flex-shrink-0" />
+                                                    )}
+                                                    <span className="font-semibold text-gray-800 flex-1 truncate">
+                                                        {tagGroup.complaints[0]?.fullText || tagGroup.complaints[0]?.name || tagGroup.tagDisplayName}
+                                                    </span>
+                                                    <span className="text-sm text-gray-500 flex-shrink-0 ml-2">
+                                                        ({tagGroup.complaints.length} e'tiroz)
+                                                    </span>
+                                                </div>
+                                            </button>
+
+                                            {/* Expanded Content */}
+                                            {isExpanded && (
+                                                <div className="border-t border-gray-200">
+                                                    <table className="w-full text-sm">
+                                                        <thead className="text-xs text-gray-500 uppercase bg-gray-50">
+                                                            <tr>
+                                                                <th className="px-4 py-3 font-medium text-gray-700 text-left">E'tiroz</th>
+                                                                <th className="px-4 py-3 font-medium text-gray-700 text-left">Soni</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-gray-100">
+                                                            {tagGroup.complaints.map((complaint, complaintIndex) => (
+                                                                <tr key={complaintIndex} className="hover:bg-gray-50 transition-colors">
+                                                                    <td className="px-4 py-3 text-gray-900">
+                                                                        {complaint.fullText || complaint.name}
+                                                                    </td>
+                                                                    <td className="px-4 py-3 font-medium text-gray-700">
+                                                                        {complaint.count} marta
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
                         </div>
                     ) : (
                         <div className="h-80 w-full flex items-center justify-center">
@@ -2146,30 +2274,60 @@ export default function Statistics() {
                                 <h2 className="text-xl font-semibold text-gray-800 mb-6">Eng ko'p xatolar - Jamoa ({getCategoryDisplayName(filterCategory, categories, managers) || filterCategory})</h2>
                                 {teamMistakesData.length > 0 ? (
                                     <div className="flex-1 overflow-auto">
-                                        <table className="w-full text-sm text-left">
-                                            <thead className="text-xs text-gray-500 uppercase bg-gray-50 sticky top-0 z-10">
-                                                <tr>
-                                                    <th className="px-4 py-3 font-medium text-gray-700">Tag</th>
-                                                    <th className="px-4 py-3 font-medium text-gray-700">Eng ko'p takrorlanadigan xato</th>
-                                                    <th className="px-4 py-3 font-medium text-gray-700">Soni</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-100">
-                                                {teamMistakesData.map((mistake, index) => (
-                                                    <tr key={index} className="hover:bg-gray-50 transition-colors">
-                                                        <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
-                                                            {mistake.tagDisplayName}
-                                                        </td>
-                                                        <td className="px-4 py-3 text-red-600">
-                                                            {mistake.name}
-                                                        </td>
-                                                        <td className="px-4 py-3 font-medium text-gray-700">
-                                                            {mistake.count}
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
+                                        <div className="space-y-2">
+                                            {teamMistakesData.map((tagGroup, groupIndex) => {
+                                                const isExpanded = expandedMistakeTags.has(tagGroup.tag);
+                                                return (
+                                                    <div key={groupIndex} className="border border-gray-200 rounded-lg overflow-hidden">
+                                                        {/* Tag Group Header */}
+                                                        <button
+                                                            onClick={() => toggleMistakeTag(tagGroup.tag)}
+                                                            className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-between text-left"
+                                                        >
+                                                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                                {isExpanded ? (
+                                                                    <ChevronDown className="w-5 h-5 text-gray-600 flex-shrink-0" />
+                                                                ) : (
+                                                                    <ChevronRight className="w-5 h-5 text-gray-600 flex-shrink-0" />
+                                                                )}
+                                                                <span className="font-semibold text-red-600 flex-1 truncate">
+                                                                    {tagGroup.mistakes[0]?.name || tagGroup.tagDisplayName}
+                                                                </span>
+                                                                <span className="text-sm text-gray-500 flex-shrink-0 ml-2">
+                                                                    ({tagGroup.mistakes.length} xato)
+                                                                </span>
+                                                            </div>
+                                                        </button>
+
+                                                        {/* Expanded Content */}
+                                                        {isExpanded && (
+                                                            <div className="border-t border-gray-200">
+                                                                <table className="w-full text-sm">
+                                                                    <thead className="text-xs text-gray-500 uppercase bg-gray-50">
+                                                                        <tr>
+                                                                            <th className="px-4 py-3 font-medium text-gray-700 text-left">Xato</th>
+                                                                            <th className="px-4 py-3 font-medium text-gray-700 text-left">Soni</th>
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody className="divide-y divide-gray-100">
+                                                                        {tagGroup.mistakes.map((mistake, mistakeIndex) => (
+                                                                            <tr key={mistakeIndex} className="hover:bg-gray-50 transition-colors">
+                                                                                <td className="px-4 py-3 text-red-600">
+                                                                                    {mistake.name}
+                                                                                </td>
+                                                                                <td className="px-4 py-3 font-medium text-gray-700">
+                                                                                    {mistake.count}
+                                                                                </td>
+                                                                            </tr>
+                                                                        ))}
+                                                                    </tbody>
+                                                                </table>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
                                 ) : (
                                     <div className="h-80 w-full flex items-center justify-center">
@@ -2287,18 +2445,60 @@ export default function Statistics() {
                                         <h3 className="text-xl font-semibold text-gray-800 mb-6">
                                             Tavsiyalar - Jamoa ({getCategoryDisplayName(filterCategory, categories, managers) || filterCategory})
                                         </h3>
-                                        <div className="space-y-3">
-                                            {teamRecommendationsData.slice(0, 10).map((rec, idx) => (
-                                                <div key={idx} className="bg-blue-50 p-4 rounded-lg border-l-4 border-blue-500 hover:bg-blue-100 transition-colors">
-                                                    <div className="flex items-start justify-between mb-2">
-                                                        <span className="font-semibold text-gray-800 text-sm">{rec.mistake}</span>
-                                                        <span className="text-xs text-gray-500 bg-blue-200 px-2 py-1 rounded-full">
-                                                            {rec.count} marta
-                                                        </span>
+                                        <div className="space-y-2">
+                                            {teamRecommendationsData.map((tagGroup, groupIndex) => {
+                                                const isExpanded = expandedRecommendationTags.has(tagGroup.tag);
+                                                const firstRec = tagGroup.recommendations[0];
+                                                return (
+                                                    <div key={groupIndex} className="border border-gray-200 rounded-lg overflow-hidden">
+                                                        {/* Tag Group Header */}
+                                                        <button
+                                                            onClick={() => toggleRecommendationTag(tagGroup.tag)}
+                                                            className="w-full px-4 py-3 bg-blue-50 hover:bg-blue-100 transition-colors flex items-center justify-between text-left"
+                                                        >
+                                                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                                {isExpanded ? (
+                                                                    <ChevronDown className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                                                                ) : (
+                                                                    <ChevronRight className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                                                                )}
+                                                                <div className="flex-1 min-w-0">
+                                                                    <span className="font-semibold text-gray-800 text-sm block truncate">
+                                                                        {firstRec?.mistake || tagGroup.tagDisplayName}
+                                                                    </span>
+                                                                    {!isExpanded && firstRec && (
+                                                                        <p className="text-gray-600 text-xs mt-1 truncate">
+                                                                            {firstRec.recommendation}
+                                                                        </p>
+                                                                    )}
+                                                                </div>
+                                                                <span className="text-xs text-gray-500 bg-blue-200 px-2 py-1 rounded-full flex-shrink-0 ml-2">
+                                                                    {tagGroup.recommendations.length} tavsiya
+                                                                </span>
+                                                            </div>
+                                                        </button>
+
+                                                        {/* Expanded Content */}
+                                                        {isExpanded && (
+                                                            <div className="border-t border-gray-200 bg-white">
+                                                                <div className="space-y-3 p-4">
+                                                                    {tagGroup.recommendations.map((rec, recIndex) => (
+                                                                        <div key={recIndex} className="bg-blue-50 p-4 rounded-lg border-l-4 border-blue-500 hover:bg-blue-100 transition-colors">
+                                                                            <div className="flex items-start justify-between mb-2">
+                                                                                <span className="font-semibold text-gray-800 text-sm">{rec.mistake}</span>
+                                                                                <span className="text-xs text-gray-500 bg-blue-200 px-2 py-1 rounded-full">
+                                                                                    {rec.count} marta
+                                                                                </span>
+                                                                            </div>
+                                                                            <p className="text-gray-700 text-sm leading-relaxed">{rec.recommendation}</p>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
                                                     </div>
-                                                    <p className="text-gray-700 text-sm leading-relaxed">{rec.recommendation}</p>
-                                                </div>
-                                            ))}
+                                                );
+                                            })}
                                         </div>
                                     </div>
                                 )}

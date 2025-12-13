@@ -7,7 +7,7 @@ async function getCategories(req, res) {
         // Get criteria for each category
         for (const category of categories) {
             const criteria = await db.all(
-                'SELECT * FROM conversation_criteria WHERE category_id = ? ORDER BY created_at ASC',
+                'SELECT * FROM conversation_criteria WHERE category_id = ? ORDER BY id ASC',
                 category.id
             );
             category.criteria = criteria;
@@ -66,7 +66,7 @@ async function updateCategory(req, res) {
         }
 
         const criteria = await db.all(
-            'SELECT * FROM conversation_criteria WHERE category_id = ? ORDER BY created_at ASC',
+            'SELECT * FROM conversation_criteria WHERE category_id = ? ORDER BY id ASC',
             id
         );
         category.criteria = criteria;

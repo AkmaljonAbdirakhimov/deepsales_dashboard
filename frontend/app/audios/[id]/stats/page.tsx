@@ -189,14 +189,45 @@ export default function AudioStatsPage() {
     // Prepare criteria compliance data grouped by category
     const criteriaComplianceData = Object.entries(groupedCriteriaScores)
         .map(([category, criteria]) => {
-            const criteriaList = Object.entries(criteria).map(([name, score]) => {
-                const numScore = typeof score === 'number' ? score : parseFloat(score as string) || 0;
-                return {
-                    name,
-                    score: numScore,
-                    status: numScore >= 80 ? 'good' : numScore >= 60 ? 'warning' : 'poor'
-                };
+            // Get database order for criteria from categories data
+            const dbCategory = categories.find(cat => cat.name === category);
+            const dbCriteriaOrder: string[] = [];
+            if (dbCategory && dbCategory.criteria) {
+                // Criteria are already ordered by id from the backend
+                dbCriteriaOrder.push(...dbCategory.criteria.map(c => c.name));
+            }
+
+            // Build criteria list in database order
+            const criteriaList: Array<{ name: string; score: number; status: string }> = [];
+            const processedCriteria = new Set<string>();
+
+            // First, add criteria in database order
+            dbCriteriaOrder.forEach(criterionName => {
+                if (criteria[criterionName] !== undefined) {
+                    const numScore = typeof criteria[criterionName] === 'number' 
+                        ? criteria[criterionName] as number 
+                        : parseFloat(String(criteria[criterionName])) || 0;
+                    criteriaList.push({
+                        name: criterionName,
+                        score: numScore,
+                        status: numScore >= 80 ? 'good' : numScore >= 60 ? 'warning' : 'poor'
+                    });
+                    processedCriteria.add(criterionName);
+                }
             });
+
+            // Add any remaining criteria that weren't in the database (shouldn't happen, but just in case)
+            Object.entries(criteria).forEach(([name, score]) => {
+                if (!processedCriteria.has(name)) {
+                    const numScore = typeof score === 'number' ? score : parseFloat(String(score)) || 0;
+                    criteriaList.push({
+                        name,
+                        score: numScore,
+                        status: numScore >= 80 ? 'good' : numScore >= 60 ? 'warning' : 'poor'
+                    });
+                }
+            });
+
             const totalCriteria = criteriaList.length;
             const compliantCount = criteriaList.filter(c => c.status === 'good').length;
             const averageScore = totalCriteria > 0

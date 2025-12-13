@@ -77,7 +77,7 @@ async function getCategories(db, withCriteria = false) {
         if (withCriteria) {
             for (const category of categories) {
                 const criteria = await db.all(
-                    'SELECT * FROM conversation_criteria WHERE category_id = ? ORDER BY created_at ASC',
+                    'SELECT * FROM conversation_criteria WHERE category_id = ? ORDER BY id ASC',
                     category.id
                 );
                 category.criteria = criteria;
