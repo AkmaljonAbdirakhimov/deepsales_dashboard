@@ -67,6 +67,9 @@ async function createCompanySchema(databaseName) {
             )
         `);
 
+
+
+
         // Create conversation_categories table
         await client.query(`
             CREATE TABLE IF NOT EXISTS conversation_categories (
@@ -75,6 +78,8 @@ async function createCompanySchema(databaseName) {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
+
+
 
         // Create conversation_criteria table
         await client.query(`
